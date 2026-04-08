@@ -47,8 +47,8 @@ The agent loads its personality from S3-stored identity files, maintains context
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/lusoal/openclawn-redesign-awsbedrock.git
-cd openclawn-redesign-awsbedrock
+git clone https://github.com/lusoal/openclaw-redesign-awsbedrock.git
+cd openclaw-redesign-awsbedrock
 python -m venv venv && source venv/bin/activate
 pip install -e ".[dev,infra]"
 
