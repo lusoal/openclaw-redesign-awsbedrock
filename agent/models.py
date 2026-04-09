@@ -272,6 +272,7 @@ class InfraStackProps(BaseModel):
     bedrock_model_id: str
     bedrock_region: str
     enable_prompt_routing: bool = False
+    prompt_router_provider: str = "anthropic"
     prompt_router_arn: Optional[str] = None
     memory_id: Optional[str] = None
     schedule_group_name: Annotated[str, Field(min_length=1)]
@@ -283,11 +284,8 @@ class InfraStackProps(BaseModel):
 
     @model_validator(mode="after")
     def _prompt_router_required_when_enabled(self) -> InfraStackProps:
-        if self.enable_prompt_routing:
-            if not self.prompt_router_arn or not self.prompt_router_arn.strip():
-                raise ValueError(
-                    "prompt_router_arn must be provided when enable_prompt_routing is True"
-                )
+        """Validate prompt_router_arn if provided externally (CDK creates one automatically)."""
+        if self.prompt_router_arn:
             if not _ARN_PATTERN.match(self.prompt_router_arn):
                 raise ValueError(
                     "prompt_router_arn must be a valid ARN format"

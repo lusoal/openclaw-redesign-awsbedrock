@@ -72,23 +72,19 @@ def _build_components(
 
     # 4. MemoryManager — use AgentCore Memory if memory_id is available
     memory_manager = MemoryManager(memory_client=None)
-    _session_manager = None
+    _memory_config = None
     memory_id = config.memory_id or ""
-    if memory_id and memory_id != "placeholder-update-later":
+    if memory_id and memory_id.strip():
         try:
             from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
-            from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
-
-            _session_manager = AgentCoreMemorySessionManager(
-                agentcore_memory_config=AgentCoreMemoryConfig(
-                    memory_id=memory_id,
-                ),
-                region_name=config.bedrock_region,
-            )
-            logger.info("AgentCore Memory connected: %s", memory_id)
+            _memory_config = {
+                "memory_id": memory_id,
+                "region": config.bedrock_region,
+            }
+            logger.info("AgentCore Memory configured: %s", memory_id)
         except Exception as exc:
-            logger.warning("Failed to connect AgentCore Memory, running degraded: %s", exc)
-            _session_manager = None
+            logger.warning("Failed to configure AgentCore Memory: %s", exc)
+            _memory_config = None
 
     # 5. Scheduler client (optional)
     scheduler_client = None
@@ -222,6 +218,25 @@ def _build_components(
                         logger.info("Reconnected to Gateway, loaded %d MCP tools", len(mcp_tools))
                 except Exception as exc:
                     logger.warning("Failed to reconnect to Gateway: %s", exc)
+
+            # Create session manager per agent invocation (unique session)
+            _session_manager = None
+            if _memory_config:
+                try:
+                    from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+                    from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+                    import uuid as _muuid
+
+                    _session_manager = AgentCoreMemorySessionManager(
+                        agentcore_memory_config=AgentCoreMemoryConfig(
+                            memory_id=_memory_config["memory_id"],
+                            session_id=str(_muuid.uuid4()),
+                            actor_id="openclaw-agent",
+                        ),
+                        region_name=_memory_config["region"],
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to create memory session: %s", exc)
 
             return Agent(
                 model=model,

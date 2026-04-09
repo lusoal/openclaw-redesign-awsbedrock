@@ -189,6 +189,39 @@ class InfrastructureStack(Stack):
             )
         )
 
+        # --- Intelligent Prompt Router (auto model selection) ---
+        # Using Meta Llama router. To switch to Anthropic Claude:
+        # change META_LLAMA_3_1 to ANTHROPIC_CLAUDE_V1
+        prompt_router = bedrock.PromptRouter(
+            bedrock.PromptRouterProps(
+                prompt_router_id=bedrock.DefaultPromptRouterIdentifier.META_LLAMA_3_1.prompt_router_id,
+                routing_models=bedrock.DefaultPromptRouterIdentifier.META_LLAMA_3_1.routing_models,
+            ),
+            props.bedrock_region,
+        )
+
+        # Grant the runtime permission to use the prompt router
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:GetFoundationModel",
+                ],
+                resources=[
+                    prompt_router.prompt_router_arn,
+                    f"arn:aws:bedrock:{props.bedrock_region}:{self.account}:default-prompt-router/*",
+                    f"arn:aws:bedrock:*::foundation-model/*",
+                    f"arn:aws:bedrock:{props.bedrock_region}:{self.account}:inference-profile/*",
+                ],
+            )
+        )
+
+        # Use prompt router ARN if routing is enabled, otherwise use direct model
+        effective_prompt_router_arn = (
+            prompt_router.prompt_router_arn if props.enable_prompt_routing else None
+        )
+
         # --- Lambda: Scheduler -> SQS bridge with auto-cleanup ---
         scheduler_invoker = _lambda.Function(
             self,
@@ -339,12 +372,12 @@ class InfrastructureStack(Stack):
             string_value=scheduler_role.role_arn,
         )
 
-        if props.enable_prompt_routing and props.prompt_router_arn:
+        if props.enable_prompt_routing and effective_prompt_router_arn:
             ssm.StringParameter(
                 self,
                 "ParamPromptRouterArn",
                 parameter_name=f"/{props.agent_id}/config/prompt-router-arn",
-                string_value=props.prompt_router_arn,
+                string_value=effective_prompt_router_arn,
             )
 
         ssm.StringParameter(

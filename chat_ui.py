@@ -55,6 +55,8 @@ class AgentCoreClient:
     def __init__(self, runtime_arn: str, region: str) -> None:
         self._arn = runtime_arn
         self._client = boto3.client("bedrock-agentcore", region_name=region)
+        # Stable session ID per UI session (maintains conversation context)
+        self._session_id = f"ui-{uuid.uuid4().hex}00000000000"
 
     def invoke(self, agent_id: str, user_id: str, message: str) -> str:
         payload = json.dumps({
@@ -65,7 +67,7 @@ class AgentCoreClient:
         try:
             resp = self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._arn,
-                runtimeSessionId=f"ui-{uuid.uuid4().hex}00000000000",
+                runtimeSessionId=self._session_id,
                 payload=payload,
                 qualifier="DEFAULT",
             )

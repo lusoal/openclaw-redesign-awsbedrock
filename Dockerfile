@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Phase 3: SNS fan-out notifications
+# Phase 3: lock during handle_message
 COPY . .
 
 EXPOSE 8080

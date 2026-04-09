@@ -18,9 +18,9 @@ props = InfraStackProps(
     bedrock_model_id=app.node.try_get_context("bedrock_model_id")
     or "global.anthropic.claude-sonnet-4-20250514-v1:0",
     bedrock_region=app.node.try_get_context("bedrock_region") or "us-east-1",
-    enable_prompt_routing=app.node.try_get_context("enable_prompt_routing") or False,
+    enable_prompt_routing=app.node.try_get_context("enable_prompt_routing") if app.node.try_get_context("enable_prompt_routing") is not None else True,
     prompt_router_arn=app.node.try_get_context("prompt_router_arn"),
-    memory_id=app.node.try_get_context("memory_id") or "placeholder-update-later",
+    memory_id=app.node.try_get_context("memory_id"),
     schedule_group_name=app.node.try_get_context("schedule_group_name")
     or "agent-schedules",
 )
