@@ -137,20 +137,21 @@ def _build_components(
 
             logger.info("Connecting to AgentCore Gateway: %s", gateway_url)
 
-            # Custom httpx auth that signs every request with SigV4
+            # Custom httpx auth that signs every request with fresh SigV4 credentials
             _bsession = botocore_session.get_session()
-            _creds = _bsession.get_credentials()
             _region = config.bedrock_region
 
             class SigV4AuthFlow(httpx.Auth):
                 def auth_flow(self, request):
+                    # Resolve credentials fresh each time (handles expiry/refresh)
+                    creds = _bsession.get_credentials().get_frozen_credentials()
                     aws_req = AWSRequest(
                         method=request.method,
                         url=str(request.url),
                         data=request.content,
                         headers=dict(request.headers),
                     )
-                    SigV4Auth(_creds, "bedrock-agentcore", _region).add_auth(aws_req)
+                    SigV4Auth(creds, "bedrock-agentcore", _region).add_auth(aws_req)
                     for k, v in aws_req.headers.items():
                         request.headers[k] = v
                     yield request

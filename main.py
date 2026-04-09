@@ -20,6 +20,15 @@ _agent_cache = {}
 _agent_lock = threading.Lock()
 
 
+def clear_caches():
+    """Clear all caches so next request rebuilds components and picks up new tools."""
+    with _components_lock:
+        _components_cache.clear()
+    with _agent_lock:
+        _agent_cache.clear()
+    logger.info("Caches cleared — next request will rebuild components")
+
+
 def _get_components(agent_id):
     with _components_lock:
         if agent_id not in _components_cache:

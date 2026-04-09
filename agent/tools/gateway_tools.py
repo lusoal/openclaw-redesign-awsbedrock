@@ -175,6 +175,13 @@ class GatewayToolManager:
                 return f"AWS {service_name.upper()} is already registered as a Gateway target."
             return f"Failed to register Gateway target: {exc}"
 
+        # Clear caches so next request picks up the new tool
+        try:
+            from main import clear_caches
+            clear_caches()
+        except Exception:
+            pass
+
         return f"AWS {service_name.upper()} added as a Gateway tool. The agent can now call {service_name.upper()} APIs."
 
     def _add_lambda_target(self, tool_name: str, description: str, python_code: str) -> str:
@@ -258,6 +265,13 @@ class GatewayToolManager:
         except Exception as exc:
             return f"Lambda created but failed to register Gateway target: {exc}"
 
+        # Clear caches so next request picks up the new tool
+        try:
+            from main import clear_caches
+            clear_caches()
+        except Exception:
+            pass
+
         return f"Custom tool '{tool_name}' created and registered. It's now available as a Gateway tool."
 
     def _list_targets(self) -> str:
@@ -299,6 +313,14 @@ class GatewayToolManager:
                 gatewayIdentifier=self._gateway_id,
                 targetId=target_id,
             )
+
+            # Clear caches so next request reflects the removal
+            try:
+                from main import clear_caches
+                clear_caches()
+            except Exception:
+                pass
+
             return f"Target '{tool_name}' removed from Gateway."
         except Exception as exc:
             return f"Failed to remove target: {exc}"
