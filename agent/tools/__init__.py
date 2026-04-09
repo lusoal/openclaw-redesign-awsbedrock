@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from agent.identity import IdentityManager
 from agent.memory import MemoryManager
+from agent.tools.gateway_tools import GatewayToolManager
 from agent.tools.identity_tools import IdentityTools
 from agent.tools.memory_tools import MemoryTools
 from agent.tools.schedules import ScheduleManager
@@ -54,6 +55,11 @@ class ToolRegistry:
         schedule_group: str = "",
         agent_runtime_arn: str = "",
         scheduler_role_arn: str = "",
+        agentcore_client: Any = None,
+        lambda_client: Any = None,
+        gateway_id: str = "",
+        agent_id: str = "",
+        lambda_role_arn: str = "",
     ) -> None:
         self._task_manager = TaskManager(s3_client=s3_client, bucket=bucket)
         self._identity_tools = IdentityTools(identity_manager=identity_manager)
@@ -70,6 +76,18 @@ class ToolRegistry:
                 scheduler_role_arn=scheduler_role_arn,
             )
 
+        self._gateway_tool_manager: GatewayToolManager | None = None
+        if agentcore_client is not None and gateway_id:
+            self._gateway_tool_manager = GatewayToolManager(
+                agentcore_client=agentcore_client,
+                lambda_client=lambda_client,
+                s3_client=s3_client,
+                bucket=bucket,
+                gateway_id=gateway_id,
+                agent_id=agent_id,
+                lambda_role_arn=lambda_role_arn,
+            )
+
     def get_tools(self) -> list[Callable[..., Any]]:
         """Return a list of all tool callables for registration with a Strands Agent."""
         tools: list[Callable[..., Any]] = [
@@ -82,4 +100,6 @@ class ToolRegistry:
         ]
         if self._schedule_manager is not None:
             tools.append(self._schedule_manager.schedule_task)
+        if self._gateway_tool_manager is not None:
+            tools.append(self._gateway_tool_manager.manage_gateway_tools)
         return tools

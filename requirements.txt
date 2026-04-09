@@ -4,3 +4,4 @@ strands-agents-builder>=0.1.0
 boto3>=1.35.0
 pydantic>=2.0.0
 aws-opentelemetry-distro
+mcp>=1.23.0

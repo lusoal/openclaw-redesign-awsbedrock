@@ -10,6 +10,7 @@ build/
 
 # Virtual environment
 venv/
+.venv/
 
 # CDK
 infra/cdk.out/
@@ -18,11 +19,18 @@ cdk.out/
 # IDE
 .vscode/
 .idea/
+.kiro/
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Docker
 *.log
 
-.kiro
+# Generated
+generated-diagrams/
+
+# Secrets (never commit)
+.env
+*.pem

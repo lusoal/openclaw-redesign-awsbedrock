@@ -70,8 +70,25 @@ def _build_components(
     s3_client = boto3.client("s3", region_name=config.bedrock_region)
     identity_manager = IdentityManager(s3_client=s3_client, bucket=config.s3_bucket)
 
-    # 4. MemoryManager (no remote client for local dev — degraded mode)
+    # 4. MemoryManager — use AgentCore Memory if memory_id is available
     memory_manager = MemoryManager(memory_client=None)
+    _session_manager = None
+    memory_id = config.memory_id or ""
+    if memory_id and memory_id != "placeholder-update-later":
+        try:
+            from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+            from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+
+            _session_manager = AgentCoreMemorySessionManager(
+                agentcore_memory_config=AgentCoreMemoryConfig(
+                    memory_id=memory_id,
+                ),
+                region_name=config.bedrock_region,
+            )
+            logger.info("AgentCore Memory connected: %s", memory_id)
+        except Exception as exc:
+            logger.warning("Failed to connect AgentCore Memory, running degraded: %s", exc)
+            _session_manager = None
 
     # 5. Scheduler client (optional)
     scheduler_client = None
@@ -83,6 +100,17 @@ def _build_components(
         )
 
     # 6. ToolRegistry
+    gateway_id = config.gateway_id or ""
+    agentcore_client = None
+    lambda_client = None
+    if gateway_id:
+        agentcore_client = boto3.client(
+            "bedrock-agentcore-control", region_name=config.bedrock_region
+        )
+        lambda_client = boto3.client(
+            "lambda", region_name=config.bedrock_region
+        )
+
     tool_registry = ToolRegistry(
         identity_manager=identity_manager,
         memory_manager=memory_manager,
@@ -92,9 +120,58 @@ def _build_components(
         schedule_group=schedule_group,
         agent_runtime_arn=config.scheduler_target_arn or config.agent_runtime_arn or "",
         scheduler_role_arn=scheduler_role_arn,
+        agentcore_client=agentcore_client,
+        lambda_client=lambda_client,
+        gateway_id=gateway_id,
+        agent_id=agent_id,
+        lambda_role_arn=config.custom_tool_role_arn or "",
     )
 
-    # 7. Agent factory — creates a Strands Agent
+    # 7. Gateway MCP tools (if configured)
+    gateway_url = config.gateway_url or ""
+    _mcp_client = None
+    if gateway_url:
+        try:
+            from strands.tools.mcp.mcp_client import MCPClient
+            from mcp.client.streamable_http import streamablehttp_client
+            import httpx
+            from botocore.auth import SigV4Auth
+            from botocore.awsrequest import AWSRequest
+            import botocore.session as botocore_session
+
+            logger.info("Connecting to AgentCore Gateway: %s", gateway_url)
+
+            # Custom httpx auth that signs every request with SigV4
+            _bsession = botocore_session.get_session()
+            _creds = _bsession.get_credentials()
+            _region = config.bedrock_region
+
+            class SigV4AuthFlow(httpx.Auth):
+                def auth_flow(self, request):
+                    aws_req = AWSRequest(
+                        method=request.method,
+                        url=str(request.url),
+                        data=request.content,
+                        headers=dict(request.headers),
+                    )
+                    SigV4Auth(_creds, "bedrock-agentcore", _region).add_auth(aws_req)
+                    for k, v in aws_req.headers.items():
+                        request.headers[k] = v
+                    yield request
+
+            _mcp_client = MCPClient(
+                lambda: streamablehttp_client(
+                    gateway_url,
+                    auth=SigV4AuthFlow(),
+                )
+            )
+            _mcp_client.__enter__()
+            logger.info("Gateway MCP client connected")
+        except Exception as exc:
+            logger.warning("Failed to connect to Gateway MCP: %s", exc)
+            _mcp_client = None
+
+    # 8. Agent factory — creates a Strands Agent
     def _agent_factory(
         *, system_prompt: str, tools: list, model_id: str
     ) -> Any:
@@ -106,10 +183,51 @@ def _build_components(
                 model_id=model_id,
                 region_name=config.bedrock_region,
             )
+
+            # Combine built-in tools with Gateway MCP tools (refresh each invocation)
+            all_tools = list(tools)
+            if _mcp_client is not None:
+                try:
+                    mcp_tools = _mcp_client.list_tools_sync()
+                    all_tools.extend(mcp_tools)
+                    logger.info("Loaded %d MCP tools from Gateway", len(mcp_tools))
+                except Exception as exc:
+                    logger.warning("Failed to load MCP tools: %s", exc)
+            elif gateway_url:
+                # Try reconnecting if initial connection failed
+                try:
+                    from strands.tools.mcp.mcp_client import MCPClient
+                    from mcp.client.streamable_http import streamablehttp_client
+                    import httpx
+                    from botocore.auth import SigV4Auth
+                    from botocore.awsrequest import AWSRequest
+                    import botocore.session as botocore_session
+
+                    _bs = botocore_session.get_session()
+                    _cr = _bs.get_credentials()
+                    _rg = config.bedrock_region
+
+                    class _SigV4(httpx.Auth):
+                        def auth_flow(self, request):
+                            aws_req = AWSRequest(method=request.method, url=str(request.url), data=request.content, headers=dict(request.headers))
+                            SigV4Auth(_cr, "bedrock-agentcore", _rg).add_auth(aws_req)
+                            for k, v in aws_req.headers.items():
+                                request.headers[k] = v
+                            yield request
+
+                    mc = MCPClient(lambda: streamablehttp_client(gateway_url, auth=_SigV4()))
+                    with mc:
+                        mcp_tools = mc.list_tools_sync()
+                        all_tools.extend(mcp_tools)
+                        logger.info("Reconnected to Gateway, loaded %d MCP tools", len(mcp_tools))
+                except Exception as exc:
+                    logger.warning("Failed to reconnect to Gateway: %s", exc)
+
             return Agent(
                 model=model,
-                tools=tools,
+                tools=all_tools,
                 system_prompt=system_prompt,
+                session_manager=_session_manager,
             )
         except ImportError:
             logger.warning(

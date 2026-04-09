@@ -19,15 +19,28 @@ from aws_cdk import (
     aws_lambda as _lambda,
     aws_s3 as s3,
     aws_scheduler as scheduler,
+    aws_sns as sns,
+    aws_sns_subscriptions as subs,
     aws_sqs as sqs,
     aws_ssm as ssm,
 )
 from aws_cdk.aws_bedrock_agentcore_alpha import (
     AgentCoreRuntime,
     AgentRuntimeArtifact,
+    Gateway,
+    GatewayAuthorizer,
+    GatewayTarget,
+    IamAuthorizer,
+    InlineToolSchema,
+    LambdaTargetConfiguration,
+    McpProtocolConfiguration,
+    MCPProtocolVersion,
     Memory,
     MemoryStrategy,
     Runtime,
+    SchemaDefinition,
+    SchemaDefinitionType,
+    ToolDefinition,
 )
 from aws_cdk.aws_ecr_assets import Platform
 import aws_cdk.aws_bedrock_alpha as bedrock
@@ -82,13 +95,26 @@ class InfrastructureStack(Stack):
             ),
         )
 
-        # --- SQS Queue for heartbeat results ---
+        # --- SQS Queue for heartbeat results (UI polls this) ---
         heartbeat_queue = sqs.Queue(
             self,
             "HeartbeatQueue",
             queue_name=f"{props.agent_id}-heartbeat-results",
             retention_period=Duration.days(1),
             visibility_timeout=Duration.seconds(30),
+        )
+
+        # --- SNS Topic for notifications (fan-out to multiple channels) ---
+        notification_topic = sns.Topic(
+            self,
+            "NotificationTopic",
+            topic_name=f"{props.agent_id}-notifications",
+            display_name=f"OpenClaw Agent Notifications ({props.agent_id})",
+        )
+
+        # Subscribe SQS to SNS so the Gradio UI keeps working
+        notification_topic.add_subscription(
+            subs.SqsSubscription(heartbeat_queue, raw_message_delivery=True)
         )
 
         # --- AgentCore Memory ---
@@ -163,7 +189,7 @@ class InfrastructureStack(Stack):
             )
         )
 
-        # --- Lambda: Scheduler -> AgentCore Runtime bridge ---
+        # --- Lambda: Scheduler -> SQS bridge with auto-cleanup ---
         scheduler_invoker = _lambda.Function(
             self,
             "SchedulerInvoker",
@@ -177,6 +203,9 @@ class InfrastructureStack(Stack):
             environment={
                 "AGENT_RUNTIME_ARN": runtime.agent_runtime_arn,
                 "HEARTBEAT_QUEUE_URL": heartbeat_queue.queue_url,
+                "NOTIFICATION_TOPIC_ARN": notification_topic.topic_arn,
+                "IDENTITY_BUCKET": identity_bucket.bucket_name,
+                "SCHEDULE_GROUP_NAME": props.schedule_group_name,
             },
         )
 
@@ -197,6 +226,25 @@ class InfrastructureStack(Stack):
 
         # Grant Lambda permission to send messages to the heartbeat queue
         heartbeat_queue.grant_send_messages(scheduler_invoker)
+
+        # Grant Lambda permission to publish to the notification topic
+        notification_topic.grant_publish(scheduler_invoker)
+
+        # Grant Lambda S3 access for auto-cleanup of one-time schedules
+        identity_bucket.grant_read_write(scheduler_invoker)
+
+        # Grant Lambda permission to delete EventBridge schedules
+        scheduler_invoker.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["scheduler:DeleteSchedule"],
+                resources=[
+                    (
+                        f"arn:aws:scheduler:{self.region}:{self.account}"
+                        f":schedule/{props.schedule_group_name}/*"
+                    )
+                ],
+            )
+        )
 
         # Grant EventBridge Scheduler permission to invoke the Lambda
         scheduler_invoker.grant_invoke(scheduler_role)
@@ -244,6 +292,17 @@ class InfrastructureStack(Stack):
                         f"arn:aws:ssm:{self.region}:{self.account}"
                         f":parameter/{props.agent_id}/config/*"
                     )
+                ],
+            )
+        )
+
+        # AgentCore Memory permissions
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:*"],
+                resources=[
+                    memory.memory_arn,
+                    f"{memory.memory_arn}/*",
                 ],
             )
         )
@@ -309,6 +368,210 @@ class InfrastructureStack(Stack):
             string_value=heartbeat_queue.queue_url,
         )
 
+        ssm.StringParameter(
+            self,
+            "ParamNotificationTopicArn",
+            parameter_name=f"/{props.agent_id}/config/notification-topic-arn",
+            string_value=notification_topic.topic_arn,
+        )
+
+        # --- AgentCore Gateway (MCP) ---
+        gateway = Gateway(
+            self,
+            "AgentGateway",
+            gateway_name=f"{props.agent_id}-gateway",
+            description=f"MCP Gateway for agent {props.agent_id}",
+            authorizer_configuration=IamAuthorizer(),
+            protocol_configuration=McpProtocolConfiguration(
+                supported_versions=[MCPProtocolVersion.MCP_2025_06_18],
+            ),
+        )
+
+        # Grant the Gateway role broad AWS access for dynamically added services.
+        # Change this to a more restrictive policy for production use.
+        gateway.role.add_managed_policy(
+            iam.ManagedPolicy.from_aws_managed_policy_name("ReadOnlyAccess")
+        )
+
+        # Lambda for Gateway tools
+        gateway_tools_fn = _lambda.Function(
+            self,
+            "GatewayToolsFunction",
+            function_name=f"{props.agent_id}-gateway-tools",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="gateway_tools.lambda_handler",
+            code=_lambda.Code.from_asset(
+                os.path.join(os.path.dirname(__file__), "..", "lambda")
+            ),
+            timeout=Duration.seconds(30),
+        )
+
+        # Grant the Lambda read-only AWS access for the tools
+        gateway_tools_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "s3:ListAllMyBuckets",
+                    "sts:GetCallerIdentity",
+                    "lambda:ListFunctions",
+                ],
+                resources=["*"],
+            )
+        )
+
+        # Define tool schemas
+        empty_object_schema = SchemaDefinition(
+            type=SchemaDefinitionType.OBJECT,
+        )
+
+        tool_definitions = [
+            ToolDefinition(
+                name="list_s3_buckets",
+                description="List all S3 buckets in the AWS account",
+                input_schema=empty_object_schema,
+            ),
+            ToolDefinition(
+                name="describe_account",
+                description="Get AWS account ID, region, and caller identity",
+                input_schema=empty_object_schema,
+            ),
+            ToolDefinition(
+                name="list_lambda_functions",
+                description="List Lambda functions in the AWS account (up to 20)",
+                input_schema=empty_object_schema,
+            ),
+        ]
+
+        # Add Lambda target to Gateway
+        gateway_target = GatewayTarget(
+            self,
+            "GatewayToolsTarget",
+            gateway=gateway,
+            gateway_target_name=f"{props.agent_id}-aws-tools",
+            description="AWS account tools (S3, Lambda, STS)",
+            target_configuration=LambdaTargetConfiguration(
+                lambda_function=gateway_tools_fn,
+                tool_schema=InlineToolSchema(schema=tool_definitions),
+            ),
+        )
+
+        # --- Lambda execution role for custom tools created by the agent ---
+        custom_tool_role = iam.Role(
+            self,
+            "CustomToolLambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            description="Execution role for agent-created custom Lambda tools",
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                ),
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "ReadOnlyAccess"
+                ),
+            ],
+        )
+
+        # Grant the runtime permission to pass this role to Lambda
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["iam:PassRole"],
+                resources=[custom_tool_role.role_arn],
+                conditions={
+                    "StringEquals": {
+                        "iam:PassedToService": "lambda.amazonaws.com",
+                    }
+                },
+            )
+        )
+
+        # Grant the Gateway role permission to invoke custom Lambdas
+        gateway.role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:{props.agent_id}-custom-*"
+                ],
+            )
+        )
+
+        ssm.StringParameter(
+            self,
+            "ParamCustomToolRoleArn",
+            parameter_name=f"/{props.agent_id}/config/custom-tool-role-arn",
+            string_value=custom_tool_role.role_arn,
+        )
+
+        # Store Gateway URL in SSM for the agent to discover
+        ssm.StringParameter(
+            self,
+            "ParamGatewayUrl",
+            parameter_name=f"/{props.agent_id}/config/gateway-url",
+            string_value=gateway.gateway_url,
+        )
+
+        ssm.StringParameter(
+            self,
+            "ParamGatewayId",
+            parameter_name=f"/{props.agent_id}/config/gateway-id",
+            string_value=gateway.gateway_id,
+        )
+
+        # Grant the runtime permission to invoke the Gateway
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["bedrock-agentcore:*"],
+                resources=[
+                    gateway.gateway_arn,
+                    f"{gateway.gateway_arn}/*",
+                ],
+            )
+        )
+
+        # Grant the runtime permission to manage Gateway targets
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock-agentcore:CreateGatewayTarget",
+                    "bedrock-agentcore:DeleteGatewayTarget",
+                    "bedrock-agentcore:ListGatewayTargets",
+                    "bedrock-agentcore:GetGatewayTarget",
+                ],
+                resources=[
+                    gateway.gateway_arn,
+                    f"{gateway.gateway_arn}/*",
+                ],
+            )
+        )
+
+        # Grant the runtime permission to create Lambda functions for custom tools
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "lambda:CreateFunction",
+                    "lambda:UpdateFunctionCode",
+                    "lambda:GetFunction",
+                    "lambda:DeleteFunction",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                ],
+                resources=[
+                    f"arn:aws:lambda:{self.region}:{self.account}:function:{props.agent_id}-custom-*"
+                ],
+            )
+        )
+
+        # Grant PassRole for Lambda execution role
+        runtime.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["iam:PassRole"],
+                resources=[gateway.role.role_arn],
+                conditions={
+                    "StringEquals": {
+                        "iam:PassedToService": "lambda.amazonaws.com",
+                    }
+                },
+            )
+        )
+
         # --- Stack Outputs (Req 15.6) ---
         CfnOutput(
             self, "IdentityBucketName", value=identity_bucket.bucket_name
@@ -341,4 +604,13 @@ class InfrastructureStack(Stack):
         )
         CfnOutput(
             self, "HeartbeatQueueUrl", value=heartbeat_queue.queue_url
+        )
+        CfnOutput(
+            self, "NotificationTopicArn", value=notification_topic.topic_arn
+        )
+        CfnOutput(
+            self, "GatewayUrl", value=gateway.gateway_url
+        )
+        CfnOutput(
+            self, "GatewayArn", value=gateway.gateway_arn
         )

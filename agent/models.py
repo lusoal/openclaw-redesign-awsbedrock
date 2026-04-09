@@ -42,6 +42,7 @@ _KEBAB_CASE_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 # ---------------------------------------------------------------------------
 _CRON_PATTERN = re.compile(r"^cron\(.+\)$")
 _RATE_PATTERN = re.compile(r"^rate\(\d+\s+(minute|minutes|hour|hours|day|days)\)$")
+_AT_PATTERN = re.compile(r"^at\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\)$")
 
 # ---------------------------------------------------------------------------
 # ARN pattern
@@ -159,6 +160,7 @@ class ScheduleItem(BaseModel):
     id: UUID
     name: Annotated[str, Field(min_length=1, max_length=100)]
     cron_expression: str
+    schedule_type: Literal["recurring", "one-time"] = "recurring"
     description: str = ""
     payload: HeartbeatPayload
     eventbridge_rule_arn: Optional[str] = None
@@ -179,9 +181,9 @@ class ScheduleItem(BaseModel):
     @field_validator("cron_expression")
     @classmethod
     def _valid_cron_expression(cls, v: str) -> str:
-        if not _CRON_PATTERN.match(v) and not _RATE_PATTERN.match(v):
+        if not _CRON_PATTERN.match(v) and not _RATE_PATTERN.match(v) and not _AT_PATTERN.match(v):
             raise ValueError(
-                "cron_expression must be a valid EventBridge cron() or rate() expression"
+                "cron_expression must be a valid EventBridge cron(), rate(), or at() expression"
             )
         return v
 
@@ -239,6 +241,10 @@ class RuntimeConfig(BaseModel):
     scheduler_role_arn: Optional[str] = None
     agent_runtime_arn: Optional[str] = None
     scheduler_target_arn: Optional[str] = None
+    heartbeat_queue_url: Optional[str] = None
+    gateway_url: Optional[str] = None
+    gateway_id: Optional[str] = None
+    custom_tool_role_arn: Optional[str] = None
 
     @field_validator("agent_id")
     @classmethod

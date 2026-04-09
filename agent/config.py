@@ -29,6 +29,10 @@ _SSM_KEYS = {
     "scheduler-role-arn": "scheduler_role_arn",
     "agent-runtime-arn": "agent_runtime_arn",
     "scheduler-target-arn": "scheduler_target_arn",
+    "heartbeat-queue-url": "heartbeat_queue_url",
+    "gateway-url": "gateway_url",
+    "gateway-id": "gateway_id",
+    "custom-tool-role-arn": "custom_tool_role_arn",
 }
 
 # Environment variable fallback mapping
@@ -41,6 +45,10 @@ _ENV_VARS = {
     "scheduler_role_arn": "SCHEDULER_ROLE_ARN",
     "agent_runtime_arn": "AGENT_RUNTIME_ARN",
     "scheduler_target_arn": "SCHEDULER_TARGET_ARN",
+    "heartbeat_queue_url": "HEARTBEAT_QUEUE_URL",
+    "gateway_url": "GATEWAY_URL",
+    "gateway_id": "GATEWAY_ID",
+    "custom_tool_role_arn": "CUSTOM_TOOL_ROLE_ARN",
 }
 
 
@@ -100,6 +108,10 @@ class DeploymentConfig:
             scheduler_role_arn=config_values.get("scheduler_role_arn"),
             agent_runtime_arn=config_values.get("agent_runtime_arn"),
             scheduler_target_arn=config_values.get("scheduler_target_arn"),
+            heartbeat_queue_url=config_values.get("heartbeat_queue_url"),
+            gateway_url=config_values.get("gateway_url"),
+            gateway_id=config_values.get("gateway_id"),
+            custom_tool_role_arn=config_values.get("custom_tool_role_arn"),
         )
 
     # ------------------------------------------------------------------
@@ -126,22 +138,23 @@ class DeploymentConfig:
 
         try:
             ssm = self._get_ssm_client()
-            # GetParameters allows fetching up to 10 params in one call
-            response = ssm.get_parameters(Names=param_names)
+            # GetParameters allows max 10 params per call — batch if needed
+            for i in range(0, len(param_names), 10):
+                batch = param_names[i : i + 10]
+                response = ssm.get_parameters(Names=batch)
 
-            for param in response.get("Parameters", []):
-                # Extract the trailing key from the full name
-                key = param["Name"].rsplit("/", 1)[-1]
-                field_name = _SSM_KEYS.get(key)
-                if field_name:
-                    result[field_name] = param["Value"]
+                for param in response.get("Parameters", []):
+                    key = param["Name"].rsplit("/", 1)[-1]
+                    field_name = _SSM_KEYS.get(key)
+                    if field_name:
+                        result[field_name] = param["Value"]
 
-            invalid = response.get("InvalidParameters", [])
-            if invalid:
-                logger.info(
-                    "SSM parameters not found (may not be provisioned yet): %s",
-                    invalid,
-                )
+                invalid = response.get("InvalidParameters", [])
+                if invalid:
+                    logger.info(
+                        "SSM parameters not found (may not be provisioned yet): %s",
+                        invalid,
+                    )
 
         except (BotoCoreError, ClientError) as exc:
             logger.warning(

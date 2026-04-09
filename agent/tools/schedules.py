@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _KEBAB_CASE_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _CRON_PATTERN = re.compile(r"^cron\(.+\)$")
 _RATE_PATTERN = re.compile(r"^rate\(\d+\s+(minute|minutes|hour|hours|day|days)\)$")
+_AT_PATTERN = re.compile(r"^at\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\)$")
 
 
 class ScheduleManager:
@@ -123,8 +124,11 @@ class ScheduleManager:
         # Validate cron expression (Req 9.7)
         if not cron_expression or not cron_expression.strip():
             return "Cron expression must be non-empty."
-        if not _CRON_PATTERN.match(cron_expression) and not _RATE_PATTERN.match(cron_expression):
-            return "Invalid cron expression. Must be a valid EventBridge cron() or rate() expression."
+        if not _CRON_PATTERN.match(cron_expression) and not _RATE_PATTERN.match(cron_expression) and not _AT_PATTERN.match(cron_expression):
+            return "Invalid expression. Must be a valid EventBridge cron(), rate(), or at() expression."
+
+        # Determine schedule type
+        schedule_type = "one-time" if _AT_PATTERN.match(cron_expression) else "recurring"
 
         now = datetime.now(timezone.utc)
         schedule_name = f"{agent_id}-{name}"  # Req 9.8: prefix with agent_id
@@ -161,6 +165,7 @@ class ScheduleManager:
             name=name,
             description=description,
             cron_expression=cron_expression,
+            schedule_type=schedule_type,
             payload=HeartbeatPayload(**payload),
             eventbridge_rule_arn=rule_arn,
             status="active",
@@ -185,8 +190,9 @@ class ScheduleManager:
         lines: list[str] = [f"Active schedules ({len(active)}):"]
         for s in active:
             last = s.get("last_triggered_at") or "never"
+            stype = s.get("schedule_type", "recurring")
             lines.append(
-                f"  [{s.get('cron_expression', '')}] {s.get('name', '')}: "
+                f"  [{stype}] [{s.get('cron_expression', '')}] {s.get('name', '')}: "
                 f"{s.get('description', '')} "
                 f"(last run: {last}, id: {str(s.get('id', ''))[:8]})"
             )
