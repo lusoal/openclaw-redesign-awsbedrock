@@ -190,12 +190,12 @@ class InfrastructureStack(Stack):
         )
 
         # --- Intelligent Prompt Router (auto model selection) ---
-        # Using Meta Llama router. To switch to Anthropic Claude:
-        # change META_LLAMA_3_1 to ANTHROPIC_CLAUDE_V1
+        # Using Anthropic Claude router. The Meta Llama router does not
+        # support tool use in streaming mode and is incompatible.
         prompt_router = bedrock.PromptRouter(
             bedrock.PromptRouterProps(
-                prompt_router_id=bedrock.DefaultPromptRouterIdentifier.META_LLAMA_3_1.prompt_router_id,
-                routing_models=bedrock.DefaultPromptRouterIdentifier.META_LLAMA_3_1.routing_models,
+                prompt_router_id=bedrock.DefaultPromptRouterIdentifier.ANTHROPIC_CLAUDE_V1.prompt_router_id,
+                routing_models=bedrock.DefaultPromptRouterIdentifier.ANTHROPIC_CLAUDE_V1.routing_models,
             ),
             props.bedrock_region,
         )
@@ -281,6 +281,53 @@ class InfrastructureStack(Stack):
 
         # Grant EventBridge Scheduler permission to invoke the Lambda
         scheduler_invoker.grant_invoke(scheduler_role)
+
+        # --- Lambda: Agent Invoker (subscribes to SNS for agent actions) ---
+        agent_invoker = _lambda.Function(
+            self,
+            "AgentInvoker",
+            function_name=f"{props.agent_id}-agent-invoker",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="agent_invoker.handler",
+            code=_lambda.Code.from_asset(
+                os.path.join(os.path.dirname(__file__), "..", "lambda")
+            ),
+            timeout=Duration.minutes(10),
+            environment={
+                "AGENT_RUNTIME_ARN": runtime.agent_runtime_arn,
+                "NOTIFICATION_TOPIC_ARN": notification_topic.topic_arn,
+            },
+        )
+
+        # Grant agent-invoker permission to invoke AgentCore Runtime
+        agent_invoker.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock-agentcore:InvokeAgentRuntime",
+                    "bedrock-agentcore:CreateRuntimeSession",
+                    "bedrock-agentcore:GetAgentRuntimeEndpoint",
+                ],
+                resources=[
+                    runtime.agent_runtime_arn,
+                    f"{runtime.agent_runtime_arn}/*",
+                ],
+            )
+        )
+
+        # Grant agent-invoker permission to publish results back to SNS
+        notification_topic.grant_publish(agent_invoker)
+
+        # Subscribe agent-invoker to SNS with filter: only agent_action=true
+        notification_topic.add_subscription(
+            subs.LambdaSubscription(
+                agent_invoker,
+                filter_policy={
+                    "agent_action": sns.SubscriptionFilter.string_filter(
+                        allowlist=["true"],
+                    ),
+                },
+            )
+        )
 
         # --- Grant S3 access to the runtime ---
         identity_bucket.grant_read_write(runtime)

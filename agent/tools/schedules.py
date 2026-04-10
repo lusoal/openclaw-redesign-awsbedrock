@@ -73,6 +73,7 @@ class ScheduleManager:
         cron_expression: str = "",
         task_prompt: str = "",
         schedule_id: str = "",
+        agent_action: bool = False,
     ) -> str:
         """Manage scheduled agent invocations. Actions: create, list, delete.
 
@@ -85,12 +86,15 @@ class ScheduleManager:
             cron_expression: EventBridge cron expression (required for 'create')
             task_prompt: What the agent should do when triggered (required for 'create')
             schedule_id: Schedule ID prefix (required for 'delete')
+            agent_action: If true, the agent will execute the task_prompt when triggered instead of just notifying
+            task_prompt: What the agent should do when triggered (required for 'create')
+            schedule_id: Schedule ID prefix (required for 'delete')
         """
         key = f"agents/{agent_id}/schedules.json"
         schedules = self._load_schedules(key)
 
         if action == "create":
-            return self._create(key, schedules, agent_id, user_id, name, description, cron_expression, task_prompt)
+            return self._create(key, schedules, agent_id, user_id, name, description, cron_expression, task_prompt, agent_action)
         if action == "list":
             return self._list(schedules)
         if action == "delete":
@@ -112,6 +116,7 @@ class ScheduleManager:
         description: str,
         cron_expression: str,
         task_prompt: str,
+        agent_action: bool = False,
     ) -> str:
         # Validate name (Req 9.6)
         if not name or not name.strip():
@@ -138,6 +143,7 @@ class ScheduleManager:
             "task": task_prompt,
             "agent_id": agent_id,
             "user_id": user_id,
+            "agent_action": agent_action,
         }
 
         # Req 9.2: Create EventBridge rule FIRST, before persisting to S3

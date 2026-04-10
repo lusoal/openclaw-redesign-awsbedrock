@@ -272,7 +272,6 @@ class InfraStackProps(BaseModel):
     bedrock_model_id: str
     bedrock_region: str
     enable_prompt_routing: bool = False
-    prompt_router_provider: str = "anthropic"
     prompt_router_arn: Optional[str] = None
     memory_id: Optional[str] = None
     schedule_group_name: Annotated[str, Field(min_length=1)]

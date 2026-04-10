@@ -9,7 +9,8 @@ One `cdk deploy`. No databases. No servers.
 - Loads personality from S3 identity files (SOUL.md, AGENTS.md)
 - Remembers you across sessions via AgentCore Memory (summaries, preferences, facts)
 - Manages tasks and schedules through natural conversation
-- Sends proactive reminders via EventBridge → Lambda → SQS
+- Sends proactive reminders via EventBridge → Lambda → SNS → SQS
+- Triggers itself to execute tasks autonomously (EventBridge → SNS → Agent Invoker → Runtime)
 - Extends its own capabilities by creating Lambda tools and registering them on the Gateway
 - Connects to AWS services (EKS, S3, etc.) through AgentCore Gateway MCP
 
@@ -42,32 +43,7 @@ python chat_ui.py --agent-id my-agent
 
 ## Architecture
 
-```mermaid
-graph TB
-    UI[Gradio UI] -->|invoke| Runtime[AgentCore Runtime<br/>Strands Agent + Tools + MCP]
-    SQS[SQS Queue] -.->|poll notifications| UI
-
-    Runtime --> S3[S3 Bucket<br/>Identity · Tasks · Schedules]
-    Runtime --> Memory[AgentCore Memory<br/>Summaries · Preferences · Facts]
-    Runtime --> Bedrock[Bedrock<br/>Claude Sonnet 4]
-    Runtime --> Gateway[AgentCore Gateway<br/>MCP Tools]
-    Runtime -->|create schedule| EB[EventBridge Scheduler]
-
-    EB -->|cron/rate/at| Lambda[Lambda Bridge]
-    Lambda --> SQS
-
-    Gateway --> LambdaTools[Lambda Tools<br/>EKS · Custom]
-    Gateway -.->|agent adds targets<br/>at runtime| LambdaTools
-
-    style Runtime fill:#ff9900,color:#fff
-    style Memory fill:#527fff,color:#fff
-    style Gateway fill:#527fff,color:#fff
-    style Bedrock fill:#527fff,color:#fff
-    style S3 fill:#3f8624,color:#fff
-    style EB fill:#ff4f8b,color:#fff
-    style SQS fill:#ff4f8b,color:#fff
-    style Lambda fill:#ff9900,color:#fff
-```
+![OpenClaw AWS Agent Architecture](static/openclaw_aws_agent_architecture.png)
 
 ## What Gets Deployed
 
@@ -77,10 +53,13 @@ graph TB
 | AgentCore Memory | Summarization, user preference, and semantic strategies |
 | AgentCore Runtime | Containerized agent (BedrockAgentCoreApp) |
 | AgentCore Gateway | MCP endpoint for extensible tools (IAM auth) |
-| Lambda (scheduler-invoker) | Bridges EventBridge → SQS for notifications |
+| Bedrock Prompt Router | Intelligent model routing (Anthropic Claude, disabled by default) |
+| Lambda (scheduler-invoker) | Bridges EventBridge → SNS for notifications |
+| Lambda (agent-invoker) | Subscribes to SNS, invokes Runtime for proactive agent actions |
 | Lambda (gateway-tools) | Sample AWS tools (S3, Lambda, STS) |
+| SNS Topic | Fan-out hub for notifications (SQS, email, agent invoker) |
 | SQS Queue | Delivers scheduled reminders to the UI |
-| EventBridge Schedule Group | Agent-managed cron schedules |
+| EventBridge Schedule Group | Agent-managed cron/rate/one-time schedules |
 | IAM Roles | Least-privilege for runtime, scheduler, Lambda, Gateway |
 | SSM Parameters | Runtime config at `/{agent_id}/config/*` |
 
@@ -149,9 +128,29 @@ Supports three expression types:
 - `cron(0 9 ? * MON-FRI *)` — recurring cron
 - `at(2026-04-10T14:30:00)` — one-time (auto-deletes after firing)
 
-EventBridge → Lambda → SQS → UI notification panel.
+EventBridge → Lambda → SNS → SQS → UI notification panel.
+
+When `agent_action=true` is set on a schedule, the SNS message triggers the Agent Invoker Lambda, which calls the Runtime to execute the task autonomously. Results are published back to SNS (with `agent_action=false` to avoid loops).
 
 ## Configuration
+
+All configuration is managed via `infra/cdk.json`:
+
+```json
+{
+  "context": {
+    "agent_id": "my-agent",
+    "bedrock_model_id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "bedrock_region": "us-east-1",
+    "enable_prompt_routing": false,
+    "prompt_router_arn": null,
+    "memory_id": null,
+    "schedule_group_name": "agent-schedules"
+  }
+}
+```
+
+Set `enable_prompt_routing` to `true` to enable Bedrock Intelligent Prompt Routing.
 
 SSM Parameters (deployed) with environment variable fallback (local dev):
 
@@ -183,7 +182,7 @@ pytest tests/ -v
 ├── pyproject.toml                 # Project metadata and dev dependencies
 ├── chat_ui.py                     # Gradio UI (calls deployed AgentCore Runtime)
 ├── run_tests.py                   # Test runner helper
-├── BLOG.md                        # Blog post about the architecture
+├── static/                        # Architecture diagram (PNG)
 ├── agent/
 │   ├── main.py                    # _build_components, handle_invocation, CLI
 │   ├── orchestrator.py            # Ties identity, memory, tools, LLM together
@@ -216,7 +215,8 @@ pytest tests/ -v
 │   ├── stacks/
 │   │   └── agent_stack.py         # All AWS resources in one CDK stack
 │   └── lambda/
-│       ├── scheduler_invoker.py   # EventBridge → SQS bridge (auto-cleanup)
+│       ├── scheduler_invoker.py   # EventBridge → SNS bridge (auto-cleanup)
+│       ├── agent_invoker.py       # SNS → Runtime bridge (proactive agent actions)
 │       └── gateway_tools.py       # Sample Gateway Lambda tools
 └── tests/                         # Unit + property-based tests (pytest + hypothesis)
 ```

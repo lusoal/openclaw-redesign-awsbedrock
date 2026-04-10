@@ -5,7 +5,6 @@
     "bedrock_model_id": "global.anthropic.claude-sonnet-4-20250514-v1:0",
     "bedrock_region": "us-east-1",
     "enable_prompt_routing": false,
-    "prompt_router_provider": "anthropic",
     "prompt_router_arn": null,
     "memory_id": null,
     "schedule_group_name": "agent-schedules"

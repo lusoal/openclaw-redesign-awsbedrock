@@ -19,6 +19,7 @@ Use cron() for specific times: cron(0 9 * * ? *) for daily at 9 AM UTC.
 Use at() for one-time reminders: at(2026-04-10T14:30:00) for a specific date/time in UTC.
 One-time schedules (at()) auto-delete after firing. Recurring schedules (rate/cron) keep running until deleted.
 When the user says "in X minutes", use get_current_date first to compute the target time, then use at().
+Set agent_action=true when the user wants the agent to actually perform a task (not just notify). For example "check my EKS clusters every hour" should use agent_action=true.
 
 ## update_identity / update_user_profile / save_to_memory
 Update your own identity files or save information about the user for future sessions.

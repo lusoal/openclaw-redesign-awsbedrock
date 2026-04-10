@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Phase 3: cache busting on tool add/remove
+# Phase 3: agent-invoker + agent_action
 COPY . .
 
 EXPOSE 8080

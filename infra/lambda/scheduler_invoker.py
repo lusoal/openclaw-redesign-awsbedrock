@@ -45,10 +45,18 @@ def handler(event, context):
     # Publish to SNS (fans out to all subscribers)
     if TOPIC_ARN:
         try:
+            # Set agent_action attribute for SNS filter policies
+            is_agent_action = str(event.get("agent_action", False)).lower()
             sns.publish(
                 TopicArn=TOPIC_ARN,
                 Message=json.dumps(message),
                 Subject=f"Agent Reminder: {task[:80]}" if task else "Agent Reminder",
+                MessageAttributes={
+                    "agent_action": {
+                        "DataType": "String",
+                        "StringValue": is_agent_action,
+                    }
+                },
             )
             logger.info("Published to SNS topic")
         except Exception as exc:
