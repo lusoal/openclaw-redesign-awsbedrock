@@ -100,6 +100,9 @@ The `manage_gateway_tools` tool supports:
 - `list` — shows all Gateway targets
 - `remove` — deletes a target
 
+Custom Lambda tools run with `ReadOnlyAccess` by default. To allow write operations, change the managed policy in `infra/stacks/agent_stack.py` on the `CustomToolLambdaRole`.
+- `remove` — deletes a target
+
 ## Identity Files
 
 Stored in S3 at `agents/{agent_id}/`:

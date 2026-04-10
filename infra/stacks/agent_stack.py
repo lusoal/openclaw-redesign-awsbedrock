@@ -544,9 +544,8 @@ class InfrastructureStack(Stack):
                 iam.ManagedPolicy.from_aws_managed_policy_name(
                     "service-role/AWSLambdaBasicExecutionRole"
                 ),
-                # Change to "ReadOnlyAccess" to restrict write operations
                 iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "AdministratorAccess"
+                    "ReadOnlyAccess"
                 ),
             ],
         )
